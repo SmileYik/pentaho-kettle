@@ -1,0 +1,201 @@
+name: Build and Release Pentaho Kettle
+
+on:
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g., v11.0.0.0)'
+        required: true
+        default: 'v11.0.0.0-SNAPSHOT'
+      release_name:
+        description: 'Release name'
+        required: true
+        default: 'Pentaho Kettle Release'
+      release_body:
+        description: 'Release description'
+        required: false
+        default: 'Automated release of Pentaho Kettle distribution packages'
+      is_prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  
+  # Git hooks触发 (推送标签时)
+  push:
+    tags:
+      - 'v*'
+
+env:
+  MAVEN_OPTS: '-Xmx4g -Xms1g'
+  JAVA_VERSION: '11'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: 'temurin'
+
+    - name: Setup Maven
+      uses: stCarolas/setup-maven@v5
+
+    - name: Setup Maven Config
+      run: |
+        apt-get update && apt-get install -y curl
+        curl -o "~/.m2/setting.xml" "https://raw.githubusercontent.com/pentaho/maven-parent-poms/master/maven-support-files/settings.xml"
+        cat "~/.m2/setting.xml"
+    
+    - name: Configure Git
+      run: |
+        git config --global user.email "action@github.com"
+        git config --global user.name "GitHub Action"
+    
+    - name: Determine release parameters
+      id: release_params
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          echo "tag=${{ github.event.inputs.release_tag }}" >> $GITHUB_OUTPUT
+          echo "name=${{ github.event.inputs.release_name }}" >> $GITHUB_OUTPUT
+          echo "body=${{ github.event.inputs.release_body }}" >> $GITHUB_OUTPUT
+          echo "prerelease=${{ github.event.inputs.is_prerelease }}" >> $GITHUB_OUTPUT
+        else
+          # 从Git标签触发
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "name=Pentaho Kettle $TAG" >> $GITHUB_OUTPUT
+          echo "body=Release $TAG of Pentaho Kettle distribution packages" >> $GITHUB_OUTPUT
+          if [[ "$TAG" == *"SNAPSHOT"* ]] || [[ "$TAG" == *"alpha"* ]] || [[ "$TAG" == *"beta"* ]] || [[ "$TAG" == *"rc"* ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+        fi
+    
+    - name: Build project
+      run: |
+        echo "Starting Maven build..."
+        mvn clean package -DskipTests -B -V \
+          -Dmaven.javadoc.skip=true \
+          -Dmaven.source.skip=true \
+          -Dcheckstyle.skip=true \
+          -Dpmd.skip=true \
+          -Dspotbugs.skip=true \
+          -Denforcer.skip=true \
+          -Dmaven.wagon.http.retryHandler.count=3 \
+          -Dmaven.wagon.httpconnectionManager.ttlSeconds=120
+    
+    - name: Verify build artifacts
+      run: |
+        echo "Checking for build artifacts..."
+        find assemblies -name "*.zip" -type f | head -20
+        
+        # 验证主要分发包是否存在
+        if [ ! -f assemblies/client/target/pdi-ce-*.zip ]; then
+          echo "ERROR: Client distribution package not found!"
+          exit 1
+        fi
+        
+        echo "Build artifacts verified successfully"
+    
+    - name: Collect release artifacts
+      id: collect_artifacts
+      run: |
+        echo "Collecting release artifacts..."
+        mkdir -p release-artifacts
+        
+        # 收集所有assembly生成的zip文件
+        find assemblies -name "*.zip" -type f -exec cp {} release-artifacts/ \;
+        
+        # 列出所有收集到的文件
+        echo "Collected artifacts:"
+        ls -la release-artifacts/
+        
+        # 生成artifacts列表用于后续步骤
+        cd release-artifacts
+        ARTIFACTS=$(ls *.zip | tr '\n' ' ')
+        echo "artifacts=$ARTIFACTS" >> $GITHUB_OUTPUT
+        
+        # 计算文件数量
+        COUNT=$(ls *.zip | wc -l)
+        echo "count=$COUNT" >> $GITHUB_OUTPUT
+        
+        echo "Total artifacts collected: $COUNT"
+    
+    - name: Create or update release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.release_params.outputs.tag }}
+        name: ${{ steps.release_params.outputs.name }}
+        body: |
+          ${{ steps.release_params.outputs.body }}
+          
+          ## 📦 Distribution Packages
+          
+          This release includes the following Pentaho Kettle distribution packages:
+          
+          - **pdi-ce-*.zip**: Desktop Client Community Edition
+          - **pdi-static-*.zip**: Static resources and configurations  
+          - **pdi-libs-*.zip**: Library dependencies
+          - **pdi-plugins-*.zip**: Plugin modules
+          - **pdi-samples-*.zip**: Sample transformations and jobs
+          
+          ## 🚀 Installation
+          
+          1. Download the appropriate distribution package for your needs
+          2. Extract the zip file to your desired location
+          3. Follow the installation instructions in the extracted directory
+          
+          ## 📋 Build Information
+          
+          - **Build Date**: ${{ github.event.head_commit.timestamp }}
+          - **Commit**: ${{ github.sha }}
+          - **Java Version**: ${{ env.JAVA_VERSION }}
+          - **Artifacts Count**: ${{ steps.collect_artifacts.outputs.count }}
+          
+        draft: false
+        prerelease: ${{ steps.release_params.outputs.prerelease == 'true' }}
+        files: release-artifacts/*.zip
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fail_on_unmatched_files: true
+    
+    - name: Upload build logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          **/target/surefire-reports/
+          **/target/*.log
+          ~/.m2/repository/.cache/
+        retention-days: 7
+    
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "Cleaning up temporary files..."
+        rm -rf release-artifacts
+        echo "Cleanup completed"
+    
+    - name: Release summary
+      if: success()
+      run: |
+        echo "🎉 Release completed successfully!"
+        echo "📦 Release URL: ${{ steps.create_release.outputs.url }}"
+        echo "🏷️ Tag: ${{ steps.release_params.outputs.tag }}"
+        echo "📊 Artifacts: ${{ steps.collect_artifacts.outputs.count }} files uploaded"

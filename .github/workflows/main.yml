@@ -56,7 +56,7 @@ jobs:
 
     - name: Setup Maven Config
       run: |
-        apt-get update && apt-get install -y curl
+        sudo apt-get update && sudo apt-get install -y curl
         curl -o "~/.m2/setting.xml" "https://raw.githubusercontent.com/pentaho/maven-parent-poms/master/maven-support-files/settings.xml"
         cat "~/.m2/setting.xml"
     

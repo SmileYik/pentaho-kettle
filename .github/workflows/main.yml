@@ -62,7 +62,8 @@ jobs:
         mkdir -p ~/.m2/
         cd ~/.m2
         curl -o setting.xml "https://raw.githubusercontent.com/pentaho/maven-parent-poms/master/maven-support-files/settings.xml"
-        cat "~/.m2/setting.xml"
+        ls -la
+        cat ./*
     
     - name: Configure Git
       run: |

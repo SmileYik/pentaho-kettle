@@ -60,7 +60,8 @@ jobs:
         echo "$PATH"
         echo "$MAVEN_HOME"
         mkdir -p ~/.m2/
-        curl -o "~/.m2/setting.xml" "https://raw.githubusercontent.com/pentaho/maven-parent-poms/master/maven-support-files/settings.xml"
+        cd ~/.m2
+        curl -o setting.xml "https://raw.githubusercontent.com/pentaho/maven-parent-poms/master/maven-support-files/settings.xml"
         cat "~/.m2/setting.xml"
     
     - name: Configure Git
